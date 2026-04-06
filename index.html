@@ -1,0 +1,442 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>TypeMaster — Игровой тренажёр слепой печати</title>
+  <meta name="description" content="Научись печатать вслепую через игру. Тренируй скорость и точность с интерактивной клавиатурой." />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⌨️</text></svg>" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&display=swap" />
+  <link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+<div id="app">
+
+  <!-- ═══ TOP BAR ═══════════════════════════════════════════════════ -->
+  <header class="topbar">
+    <a href="#" class="topbar-logo" data-nav="home">
+      <span class="logo-icon">⌨️</span>
+      TypeMaster
+    </a>
+
+    <nav style="display:flex;gap:4px;">
+      <button class="nav-btn active" data-nav="home">🏠 <span>Главная</span></button>
+      <button class="nav-btn" data-nav="levels">📋 <span>Уровни</span></button>
+      <button class="nav-btn" data-nav="stats">📊 <span>Статистика</span></button>
+      <button class="nav-btn" data-nav="achievements">🏆 <span>Достижения</span></button>
+      <button class="nav-btn nav-btn-leaderboard" data-nav="leaderboard" id="nav-leaderboard">🌟 <span>Таблица</span></button>
+      <button class="nav-btn" data-nav="guide">🖐 <span>Инструкция</span></button>
+      <button class="nav-btn" data-nav="settings">⚙️ <span>Настройки</span></button>
+      <button class="nav-btn nav-btn-admin" data-nav="admin" id="nav-admin" style="display:none">🛡️ <span>Админ</span></button>
+    </nav>
+
+    <div class="topbar-spacer"></div>
+
+    <div class="profile-pill" title="Редактировать профиль">
+      <div class="profile-avatar" id="profile-avatar">Я</div>
+      <div class="profile-info">
+        <strong id="profile-name">Игрок</strong>
+        <small id="profile-level">Уровень 1</small>
+      </div>
+      <button class="btn-logout" id="btn-logout" title="Выйти из аккаунта">↩</button>
+    </div>
+  </header>
+
+  <!-- ═══ MAIN CONTENT ══════════════════════════════════════════════ -->
+  <main class="main-content">
+
+    <!-- ─── HOME PAGE ────────────────────────────────────────────── -->
+    <section id="page-home" class="page active">
+      <div class="home-layout">
+
+        <!-- Hero -->
+        <div class="home-hero">
+          <div class="home-hero-left">
+            <h1 class="hero-title">Печатай быстро. Печатай вслепую.</h1>
+            <p class="hero-subtitle">Обучение через игру с полным контролем пальцев — экранная клавиатура всегда у тебя перед глазами.</p>
+            <div class="quick-stats">
+              <div class="qs-item"><div class="qs-val" id="home-best-speed">0</div><div class="qs-lbl">Лучшая скорость<br>зн/мин</div></div>
+              <div class="qs-item"><div class="qs-val" id="home-sessions">0</div><div class="qs-lbl">Всего<br>сессий</div></div>
+              <div class="qs-item"><div class="qs-val" id="home-level">1</div><div class="qs-lbl">Текущий<br>уровень</div></div>
+              <div class="qs-item"><div class="qs-val" id="home-streak">0 🔥</div><div class="qs-lbl">Дней<br>подряд</div></div>
+            </div>
+          </div>
+          <div id="home-hero-vip" class="home-hero-vip"></div>
+        </div>
+
+        <!-- Game mode selection -->
+        <div class="game-select-area">
+          <div>
+            <div class="section-label">Выбери режим</div>
+            <div class="mode-cards">
+              <div class="mode-card" data-mode="classic">
+                <div class="mc-icon">📝</div>
+                <div class="mc-name">Классика</div>
+                <div class="mc-desc">Текст-образец сверху, твой ввод снизу. Тренируй скорость и точность.</div>
+                <span class="mc-badge" style="background:#2d6a4f;color:#d8f3dc">🎚 3 сложности</span>
+              </div>
+              <div class="mode-card" data-mode="falling">
+                <div class="mc-icon">🎮</div>
+                <div class="mc-name">Падающие слова</div>
+                <div class="mc-desc">Слова летят вниз. Успей напечатать до того, как они достигнут края!</div>
+                <span class="mc-badge" style="background:#1a3a5c;color:#aed6f1">🎚 3 сложности</span>
+              </div>
+              <div class="mode-card" data-mode="zombie">
+                <div class="mc-icon">🧟</div>
+                <div class="mc-name">Зомби-атака</div>
+                <div class="mc-desc">Зомби надвигаются на тебя. Уничтожь их словом, пока не поздно!</div>
+                <span class="mc-badge" style="background:#4a1a1a;color:#f1948a">🎚 3 сложности</span>
+              </div>
+              <div class="mode-card" data-mode="osu">
+                <div class="mc-icon">🔮</div>
+                <div class="mc-name">Сферы</div>
+                <div class="mc-desc">Сферы с словами появляются на экране. Напечатай слово до того, как кольцо исчезнет!</div>
+                <span class="mc-badge" style="background:#9b59b6;color:#fff">🎚 3 сложности</span>
+              </div>              <div class="mode-card" data-mode="code">
+                <div class="mc-icon">💻</div>
+                <div class="mc-name">Режим кода</div>
+                <div class="mc-desc">Программирование без ошибок: JS, Python, идентификаторы, API-термины. Идеально для разработчиков.</div>
+                <span class="mc-badge" style="background:#1a2e1a;color:#4ade80">💻 Ключевые слова</span>
+              </div>
+            </div>
+          </div>
+
+          <div>
+            <div class="section-label">Быстрый старт</div>
+            <div style="display:flex;gap:10px;flex-wrap:wrap;">
+              <button class="btn btn-accent" id="btn-quick-classic">▶ Спринт (60 сек)</button>
+              <button class="btn btn-ghost" id="btn-quick-marathon">📖 Марафон (200 слов)</button>
+              <button class="btn btn-ghost" id="btn-continue-level">📋 Продолжить уровень</button>
+              <button class="btn btn-ghost" id="btn-custom-text" style="border-color:#a78bfa;color:#a78bfa">📝 Свой текст</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Sidebar -->
+        <div class="home-sidebar">
+          <div class="section-label">Зоны пальцев</div>
+          <div class="finger-legend" id="finger-legend"></div>
+          <div style="margin-top:20px;">
+            <div class="section-label">Текущий язык</div>
+            <div style="display:flex;gap:8px;margin-top:8px;">
+              <button class="btn btn-ghost btn-lang" data-lang="ru" id="btn-lang-ru">🇷🇺 Русский</button>
+              <button class="btn btn-ghost btn-lang" data-lang="en" id="btn-lang-en">🇬🇧 English</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Daily Quests panel -->
+        <div id="home-quests" style="grid-column:1/-1;margin-top:4px"></div>
+
+      </div>
+
+    </section>
+
+    <!-- ─── GUIDE PAGE ──────────────────────────────────────────────── -->
+    <section id="page-guide" class="page">
+      <div id="guide-container"></div>
+    </section>
+
+    <!-- ─── GAME PAGE ─────────────────────────────────────────────── -->
+    <section id="page-game" class="page">
+      <div class="game-topbar">
+        <span id="game-mode-title">Игра</span>
+        <div style="flex:1"></div>
+        <!-- Ghost personal best widget -->
+        <div id="ghost-widget" class="ghost-topbar-widget" style="display:none">
+          <span>👻</span>
+          <span id="ghost-topbar-val">0</span>
+          <span class="ghost-delta" id="ghost-topbar-delta"></span>
+        </div>
+        <!-- Double-Down button hidden (no rating system) -->
+        <button id="game-stop-btn">✕ Выйти</button>
+      </div>
+      <div id="game-field"></div>
+    </section>
+
+    <!-- ─── LEVELS PAGE ───────────────────────────────────────────── -->
+    <section id="page-levels" class="page">
+      <h2>📋 Система уровней</h2>
+      <p class="text-muted mt-8" style="margin-bottom:20px">Каждый уровень открывается только при достижении минимальной скорости и точности.</p>
+      <div id="levels-container"></div>
+    </section>
+
+    <!-- ─── STATS PAGE ────────────────────────────────────────────── -->
+    <section id="page-stats" class="page">
+      <div id="stats-container"></div>
+    </section>
+
+    <!-- ─── ACHIEVEMENTS PAGE ─────────────────────────────────────── -->
+    <section id="page-achievements" class="page">
+      <h2>🏆 Достижения</h2>
+      <p class="text-muted mt-8" style="margin-bottom:20px">Выполняй задания, чтобы разблокировать награды.</p>
+      <div id="achievements-container"></div>
+    <!-- ─── LEADERBOARD PAGE ─────────────────────────────────────────────── -->
+    <section id="page-leaderboard" class="page">
+      <div id="leaderboard-container"></div>
+    </section>
+    <!-- ─── SETTINGS PAGE ─────────────────────────────────────────── -->
+    <section id="page-settings" class="page">
+      <h2>⚙️ Настройки</h2>
+      <div id="settings-panel">
+
+        <!-- Display -->
+        <div class="settings-section">
+          <h3>Отображение</h3>
+          <div class="setting-row">
+            <div class="setting-info">
+              <div class="setting-label">Режим «Слепой»</div>
+              <div class="setting-hint">Скрыть буквы на экранной клавиатуре — только цветные зоны</div>
+            </div>
+            <label class="toggle"><input type="checkbox" id="set-blind-mode" /><span class="toggle-track"></span></label>
+          </div>
+          <div class="setting-row">
+            <div class="setting-info">
+              <div class="setting-label">Цветные зоны пальцев</div>
+              <div class="setting-hint">Раскраска клавиш по ответственному пальцу</div>
+            </div>
+            <label class="toggle"><input type="checkbox" id="set-color-zones" checked /><span class="toggle-track"></span></label>
+          </div>
+          <div class="setting-row">
+            <div class="setting-info">
+              <div class="setting-label">Подсказки пальцев</div>
+              <div class="setting-hint">Показывать, каким пальцем нажать</div>
+            </div>
+            <label class="toggle"><input type="checkbox" id="set-show-hints" checked /><span class="toggle-track"></span></label>
+          </div>
+        </div>
+
+        <!-- Language -->
+        <div class="settings-section">
+          <h3>Язык</h3>
+          <div class="setting-row">
+            <div class="setting-info">
+              <div class="setting-label">Раскладка клавиатуры</div>
+              <div class="setting-hint">Меняет буквы на экранной клавиатуре и тексты заданий</div>
+            </div>
+            <select class="setting-select" id="set-lang">
+              <option value="ru">🇷🇺 Русский</option>
+              <option value="en">🇬🇧 English</option>
+            </select>
+          </div>
+        </div>
+
+        <!-- Sound -->
+        <div class="settings-section">
+          <h3>Звук</h3>
+          <div class="setting-row">
+            <div class="setting-info">
+              <div class="setting-label">Звуки нажатий и ошибок</div>
+            </div>
+            <label class="toggle"><input type="checkbox" id="set-sound" checked /><span class="toggle-track"></span></label>
+          </div>
+          <div class="setting-row range-row" style="flex-direction:column;align-items:flex-start;gap:8px;padding:14px 0">
+            <div class="setting-info">
+              <div class="setting-label">Громкость музыки</div>
+            </div>
+            <input type="range" class="range-slider" id="set-music-vol" min="0" max="100" value="20" />
+          </div>
+          <div class="setting-row range-row" style="flex-direction:column;align-items:flex-start;gap:8px;padding:14px 0">
+            <div class="setting-info">
+              <div class="setting-label">Громкость эффектов</div>
+            </div>
+            <input type="range" class="range-slider" id="set-sfx-vol" min="0" max="100" value="50" />
+          </div>
+        </div>
+
+        <!-- Reset -->
+        <div class="settings-section">
+          <h3>Данные</h3>
+          <div class="setting-row">
+            <div class="setting-info">
+              <div class="setting-label">Сбросить статистику</div>
+              <div class="setting-hint">Удалить все сессии и тепловую карту</div>
+            </div>
+            <button class="btn btn-ghost" id="btn-reset-stats" style="color:var(--c-err);border-color:var(--c-err)">Сбросить</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="page-admin" class="page">
+      <h2>🛡️ Панель администратора</h2>
+      <div id="admin-panel-container"></div>
+    </section>
+
+  </main><!-- end main-content -->
+
+  <!-- ═══ GLOBAL KEYBOARD (always visible) ════════════════════════ -->
+  <div class="keyboard-section" id="global-keyboard-section">    <div class="kb-toggle-bar">
+      <button class="kb-toggle-btn" id="kb-toggle-btn" title="Показать/скрыть клавиатуру">⬆ Скрыть клавиатуру</button>
+    </div>    <div id="virtual-keyboard"></div>
+  </div>
+
+</div><!-- end app -->
+
+<!-- ═══ RESULT MODAL ══════════════════════════════════════════════════ -->
+<div class="modal-overlay" id="result-modal">
+  <div class="modal-box">
+    <button class="rm-close" title="Закрыть">✕</button>
+    <div class="modal-title">Результаты сессии</div>
+    <div class="modal-subtitle">Отличная работа! Продолжай в том же духе.</div>
+    <div class="rm-grade" id="rm-grade">A</div>
+    <div class="rm-rating-change" id="rm-rating-change"></div>
+    <div class="result-stats">
+      <div class="rs-item"><div class="rs-val" id="rm-speed">0</div><div class="rs-lbl">зн/мин</div></div>
+      <div class="rs-item"><div class="rs-val" id="rm-accuracy">0</div><div class="rs-lbl">% точность</div></div>
+      <div class="rs-item"><div class="rs-val" id="rm-chars">0</div><div class="rs-lbl">символов</div></div>
+      <div class="rs-item"><div class="rs-val" id="rm-errors">0</div><div class="rs-lbl">ошибок</div></div>
+      <div class="rs-item"><div class="rs-val" id="rm-time">0с</div><div class="rs-lbl">время</div></div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn-primary" id="rm-play-again">▶ Ещё раз</button>
+      <button class="btn-secondary" id="rm-to-menu">🏠 В меню</button>
+    </div>
+    <div id="rm-heatmap" class="rm-heatmap-container"></div>
+  </div>
+</div>
+
+<!-- ═══ AUTH MODAL ══════════════════════════════════════════════════ -->
+<div class="modal-overlay" id="auth-modal">
+  <div class="modal-box auth-modal-box">
+    <div class="auth-logo">⌨️ TypeMaster</div>
+    <div class="auth-tabs">
+      <button class="auth-tab active" data-tab="login">Вход</button>
+      <button class="auth-tab" data-tab="register">Регистрация</button>
+    </div>
+
+    <!-- Login form -->
+    <form class="auth-form" id="auth-form-login">
+      <div class="auth-field">
+        <label>Имя пользователя</label>
+        <input type="text" id="login-name" autocomplete="username" placeholder="Ваше имя" maxlength="24" />
+      </div>
+      <div class="auth-field">
+        <label>Пароль</label>
+        <input type="password" id="login-pass" autocomplete="current-password" placeholder="Пароль" />
+      </div>
+      <div class="auth-error" id="login-error"></div>
+      <button type="submit" class="btn btn-accent auth-submit">Войти</button>
+    </form>
+
+    <!-- Register form -->
+    <form class="auth-form" id="auth-form-register" style="display:none">
+      <div class="auth-field">
+        <label>Имя пользователя</label>
+        <input type="text" id="reg-name" autocomplete="username" placeholder="От 2 до 24 символов" maxlength="24" />
+      </div>
+      <div class="auth-field">
+        <label>Пароль</label>
+        <input type="password" id="reg-pass" autocomplete="new-password" placeholder="Минимум 4 символа" />
+      </div>
+      <div class="auth-field">
+        <label>Подтверждение пароля</label>
+        <input type="password" id="reg-pass2" autocomplete="new-password" placeholder="Повторите пароль" />
+      </div>
+      <div class="auth-error" id="reg-error"></div>
+      <button type="submit" class="btn btn-accent auth-submit">Создать аккаунт</button>
+    </form>
+  </div>
+</div>
+
+<!-- ═══ PROFILE EDIT MODAL ══════════════════════════════════════════ -->
+<div class="modal-overlay" id="profile-modal">
+  <div class="modal-box profile-modal-box">
+    <div class="modal-title">👤 Мой профиль</div>
+
+    <!-- Avatar picker -->
+    <div class="profile-edit-avatar-area">
+      <div class="profile-edit-avatar" id="profile-edit-avatar-preview">А</div>
+      <div class="profile-edit-avatar-label">Нажми на эмодзи, чтобы сменить аватар</div>
+      <div class="profile-edit-emoji-picker" id="profile-emoji-picker"></div>
+    </div>
+
+    <!-- Bio -->
+    <div class="profile-edit-section">
+      <label class="profile-edit-label">О себе <small>(до 100 символов)</small></label>
+      <input type="text" id="profile-edit-bio" class="profile-edit-input" maxlength="100" placeholder="Твой девиз или что-нибудь о тебе…" />
+      <div class="auth-error" id="profile-bio-error"></div>
+      <button class="btn btn-accent" id="profile-save-bio" style="margin-top:8px;width:100%">💾 Сохранить описание</button>
+    </div>
+
+    <!-- Change display name -->
+    <div class="profile-edit-section">
+      <div class="profile-edit-section-title">✏️ Изменить имя</div>
+      <input type="text" id="profile-edit-newname" class="profile-edit-input" maxlength="24" placeholder="Новое имя (2–24 символа)" />
+      <input type="password" id="profile-edit-name-pass" class="profile-edit-input" placeholder="Подтверди пароль" style="margin-top:6px" />
+      <div class="auth-error" id="profile-name-error"></div>
+      <button class="btn btn-accent" id="profile-save-name" style="margin-top:8px;width:100%">✏️ Изменить имя</button>
+    </div>
+
+    <!-- Change password -->
+    <div class="profile-edit-section">
+      <div class="profile-edit-section-title">🔒 Изменить пароль</div>
+      <input type="password" id="profile-edit-curpass" class="profile-edit-input" placeholder="Текущий пароль" />
+      <input type="password" id="profile-edit-newpass" class="profile-edit-input" placeholder="Новый пароль (мин. 4 символа)" style="margin-top:6px" />
+      <input type="password" id="profile-edit-newpass2" class="profile-edit-input" placeholder="Повторите новый пароль" style="margin-top:6px" />
+      <div class="auth-error" id="profile-pass-error"></div>
+      <button class="btn btn-accent" id="profile-save-pass" style="margin-top:8px;width:100%">🔒 Изменить пароль</button>
+    </div>
+
+    <!-- Customization section -->
+    <div class="profile-edit-section profile-vip-section" id="profile-vip-section">
+      <!-- Filled by JS -->
+    </div>
+
+    <button class="btn btn-ghost" id="profile-modal-close" style="width:100%;margin-top:4px">Закрыть</button>
+  </div>
+</div>
+
+<script src="bundle.js"></script>
+
+<!-- ═══ CUSTOM TEXT MODAL ═══════════════════════════════════════════ -->
+<div class="modal-overlay" id="custom-text-modal">
+  <div class="modal-box" style="max-width:540px">
+    <div class="modal-title">📝 Свой текст</div>
+    <div style="color:var(--text2);font-size:0.9rem;margin-bottom:12px">Вставь любой текст — книга, статья, код, или что угодно. Минимум 3 слова.</div>
+    <textarea id="custom-text-input" class="custom-text-input" rows="6" placeholder="Вставь текст сюда..."></textarea>
+    <div id="custom-text-recents" class="custom-text-recents"></div>
+    <div style="display:flex;gap:8px;margin-top:14px;justify-content:flex-end">
+      <button class="btn btn-ghost" id="custom-text-cancel">Отмена</button>
+      <button class="btn btn-accent" id="custom-text-start">▶ Начать</button>
+    </div>
+  </div>
+</div>
+
+<!-- ═══ UNIVERSAL DIFFICULTY PICKER ═══════════════════════════════════════════ -->
+<div class="modal-overlay" id="diff-modal">
+  <div class="modal-box spheres-diff-box">
+    <div class="modal-title" id="diff-modal-title">🎮 Режим</div>
+    <div class="modal-subtitle">Выбери сложность</div>
+    <div class="spheres-diff-btns">
+      <button class="spheres-diff-btn" data-diff="easy">
+        <span class="sdb-icon">🟢</span>
+        <span class="sdb-name">Легко</span>
+        <span class="sdb-desc" id="diff-easy-desc">...</span>
+      </button>
+      <button class="spheres-diff-btn" data-diff="medium">
+        <span class="sdb-icon">🟡</span>
+        <span class="sdb-name">Средне</span>
+        <span class="sdb-desc" id="diff-medium-desc">...</span>
+      </button>
+      <button class="spheres-diff-btn" data-diff="hard">
+        <span class="sdb-icon">🔴</span>
+        <span class="sdb-name">Сложно</span>
+        <span class="sdb-desc" id="diff-hard-desc">...</span>
+      </button>
+    </div>
+    <button class="btn btn-ghost" style="margin-top:14px;width:100%" id="diff-modal-cancel">Отмена</button>
+  </div>
+</div>
+
+<!-- Finger hint tooltip -->
+<div id="finger-hint-tooltip" style="
+  display:none;position:fixed;z-index:500;
+  background:#21262d;border:1px solid #30363d;
+  color:#e6edf3;padding:4px 10px;border-radius:6px;
+  font-size:0.78rem;pointer-events:none;white-space:nowrap;
+"></div>
+
+</body>
+</html>
