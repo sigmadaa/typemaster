@@ -1,5 +1,21 @@
 "use strict";
 
+// ===== js/firebase-init.js =====
+// Firebase initialization — compat SDK loaded via CDN in index.html
+// This file must be first in the bundle (before auth.js and storage.js)
+firebase.initializeApp({
+  apiKey:            'AIzaSyD5LNHJdg_fv4l--RDZlaWEdiUQ5hk6yPc',
+  authDomain:        'typemaster-f1e5a.firebaseapp.com',
+  projectId:         'typemaster-f1e5a',
+  storageBucket:     'typemaster-f1e5a.firebasestorage.app',
+  messagingSenderId: '511707783630',
+  appId:             '1:511707783630:web:5f01851c338d1d270f4b9f',
+});
+
+const _fbAuth = firebase.auth();
+const _fbDb   = firebase.firestore();
+
+
 // ===== js/data/words.js =====
 // Word lists and letter sets for training levels
 const WORDS = {
@@ -421,7 +437,9 @@ function loadProfile() {
 }
 
 function saveProfile(patch) {
-  storage.update('profile', cur => ({ ...cur, ...patch }));
+  const updated = storage.update('profile', cur => ({ ...cur, ...patch }));
+  _fbSync('profile', updated);
+  _fbSyncUserStats(updated);
 }
 
 function loadStats() {
@@ -481,7 +499,57 @@ function loadSettings() {
 }
 
 function saveSettings(patch) {
-  storage.update('settings', cur => ({ ...cur, ...patch }), {});
+  const updated = storage.update('settings', cur => ({ ...cur, ...patch }), {});
+  _fbSync('settings', updated);
+}
+
+// ─── Firestore sync helpers ───────────────────────────────────────────────
+
+/**
+ * Fire-and-forget: write a game data document to Firestore.
+ * Safe to call from synchronous code — errors are silently ignored.
+ */
+function _fbSync(key, data) {
+  if (typeof _fbDb === 'undefined' || typeof getCurrentUser !== 'function') return;
+  const uid = getCurrentUser();
+  if (!uid) return;
+  _fbDb.collection('users').doc(uid).collection('gameData').doc(key)
+    .set(data)
+    .catch(function() {});
+}
+
+/**
+ * Fire-and-forget: update stats summary on the user's main Firestore document.
+ * This allows leaderboard queries without per-user subcollection reads.
+ */
+function _fbSyncUserStats(profile) {
+  if (typeof _fbDb === 'undefined' || typeof getCurrentUser !== 'function') return;
+  const uid = getCurrentUser();
+  if (!uid) return;
+  _fbDb.collection('users').doc(uid).update({
+    level:         profile.level         || 1,
+    bestSpeed:     profile.bestSpeed     || 0,
+    totalSessions: profile.totalSessions || 0,
+    totalChars:    profile.totalChars    || 0,
+    ratingPoints:  profile.ratingPoints  || 1000,
+  }).catch(function() {});
+}
+
+/**
+ * Load profile and settings from Firestore into localStorage for the given uid.
+ * Call this in startApp() before loadProfile() / loadSettings().
+ * @param {string} uid  Firebase UID
+ */
+async function loadDataFromFirestore(uid) {
+  if (typeof _fbDb === 'undefined' || !uid) return;
+  try {
+    const [profileSnap, settingsSnap] = await Promise.all([
+      _fbDb.collection('users').doc(uid).collection('gameData').doc('profile').get(),
+      _fbDb.collection('users').doc(uid).collection('gameData').doc('settings').get(),
+    ]);
+    if (profileSnap.exists)  storage.set('profile',  profileSnap.data());
+    if (settingsSnap.exists) storage.set('settings', settingsSnap.data());
+  } catch { /* offline — use localStorage data */ }
 }
 
 
@@ -591,352 +659,283 @@ function renderQuestsPanel(container) {
 
 
 // ===== js/auth.js =====
-// ─── Auth Module ──────────────────────────────────────────────────────
-// Manages user accounts stored in localStorage.
-// Multiple users supported; current session tracked via AUTH_KEY.
+﻿// ─── Auth Module (Firebase Auth + Firestore) ──────────────────────────────
+// Requires: _fbAuth, _fbDb globals from firebase-init.js (CDN compat SDK)
 
-const AUTH_KEY = 'typemaster_auth';
+// ─── Internal state ───────────────────────────────────────────────────────
+let _fbUser  = null;   // firebase.User object
+let _userDoc = null;   // Firestore /users/{uid} document data
 
-/** Naive but sufficient client-side hash (no sensitive data at stake) */
-function simpleHash(str) {
-  let hash = 5381;
-  for (let i = 0; i < str.length; i++) {
-    hash = ((hash << 5) + hash) ^ str.charCodeAt(i);
-    hash = hash & hash; // keep 32-bit
+let _authReady = false;
+let _authReadyResolve;
+const _authReadyPromise = new Promise(r => { _authReadyResolve = r; });
+
+/**
+ * Convert a display name to a deterministic valid email for Firebase Auth.
+ * The user never sees this email — it is purely internal.
+ */
+function _nameToEmail(name) {
+  const s = (name || '').toLowerCase();
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 0x01000193) >>> 0;
   }
-  return (hash >>> 0).toString(36);
+  const prefix = s.replace(/[^a-z0-9]/g, '').slice(0, 8) || 'u';
+  return prefix + h.toString(16).padStart(8, '0') + '@typemaster.app';
 }
 
-function getAuthData() {
-  try {
-    return JSON.parse(localStorage.getItem(AUTH_KEY) || '{"users":[],"current":null}');
-  } catch { return { users: [], current: null }; }
-}
+// ─── Auth state listener ──────────────────────────────────────────────────
+_fbAuth.onAuthStateChanged(async fbUser => {
+  _fbUser = fbUser;
+  if (fbUser) {
+    try {
+      const snap = await _fbDb.collection('users').doc(fbUser.uid).get();
+      _userDoc = snap.exists ? snap.data() : null;
+    } catch { _userDoc = null; }
+    setUserStorage(fbUser.uid);
+  } else {
+    _userDoc = null;
+  }
+  if (!_authReady) {
+    _authReady = true;
+    _authReadyResolve();
+  }
+});
 
-function saveAuthData(data) {
-  localStorage.setItem(AUTH_KEY, JSON.stringify(data));
-}
+// ─── Public API ───────────────────────────────────────────────────────────
 
-/** Returns lowercase username of the current session, or null */
-function getCurrentUser() {
-  return getAuthData().current;
-}
+/** Resolves once Firebase has determined the initial auth state (persisted session) */
+function waitForAuth() { return _authReadyPromise; }
 
-/** Returns display name of the current user, or null */
+/** Returns true if a user is currently signed in */
+function isLoggedIn() { return !!_fbUser; }
+
+/** Returns the Firebase UID of the current user, or null */
+function getCurrentUser() { return _fbUser ? _fbUser.uid : null; }
+
+/** Returns the current user's display name */
 function getCurrentUserDisplayName() {
-  const data = getAuthData();
-  if (!data.current) return null;
-  const user = data.users.find(u => u.username === data.current);
-  return user?.displayName || data.current;
+  return (_userDoc && _userDoc.displayName) || 'Игрок';
 }
 
-function isLoggedIn() {
-  return !!getCurrentUser();
+/** Returns a copy of the current user's data object, or null */
+function getCurrentUserData() {
+  if (!_fbUser || !_userDoc) return null;
+  return Object.assign({}, _userDoc, { uid: _fbUser.uid });
 }
+
+/** Returns true if the current user has admin privileges */
+function isAdmin() { return !!(_userDoc && _userDoc.admin); }
+
+/** Always returns true — VIP gating removed */
+function isVip() { return true; }
+
+// ─── Register ─────────────────────────────────────────────────────────────
 
 /**
  * Register a new user.
- * Checks username uniqueness both locally and on the server (cross-device).
- * @returns {Promise<{ ok: boolean, error?: string, user?: object }>}
+ * @param {string} displayName  Shown in the app (2–24 chars)
+ * @param {string} password     Minimum 6 characters (Firebase requirement)
+ * @returns {Promise<{ok:boolean, error?:string, user?:object}>}
  */
 async function registerUser(displayName, password) {
   displayName = (displayName || '').trim();
-  if (displayName.length < 2) return { ok: false, error: 'Имя не может быть короче 2 символов' };
-  if (displayName.length > 24) return { ok: false, error: 'Имя не может быть длиннее 24 символов' };
-  if (!password || password.length < 4) return { ok: false, error: 'Пароль: минимум 4 символа' };
+  if (displayName.length < 2)  return { ok: false, error: 'Имя: минимум 2 символа' };
+  if (displayName.length > 24) return { ok: false, error: 'Имя: максимум 24 символа' };
+  if (!password || password.length < 6) return { ok: false, error: 'Пароль: минимум 6 символов' };
 
-  const data = getAuthData();
-  const uname = displayName.toLowerCase();
-  const hash = simpleHash(password);
-
-  // Fast local check (same device)
-  if (data.users.find(u => u.username === uname)) {
-    return { ok: false, error: 'Такое имя уже занято' };
-  }
-
-  // Server check — prevents the same nick across different devices/browsers
+  const email = _nameToEmail(displayName);
   try {
-    const resp = await fetch('/api/users/register', {
-      method:  'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify({ displayName, passwordHash: hash }),
-    });
-    const result = await resp.json();
-    if (!result.ok) return { ok: false, error: result.error || 'Это имя уже занято другим игроком' };
-  } catch {
-    // Server unreachable (offline / local file) — fall through to local-only registration
-    console.warn('[Auth] Server unavailable, falling back to local-only registration');
+    const cred = await _fbAuth.createUserWithEmailAndPassword(email, password);
+    const uid  = cred.user.uid;
+    const doc  = {
+      displayName,
+      username:  displayName.toLowerCase(),
+      createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+      admin:     false,
+    };
+    await _fbDb.collection('users').doc(uid).set(doc);
+    _fbUser  = cred.user;
+    _userDoc = Object.assign({}, doc, { createdAt: Date.now() });
+    setUserStorage(uid);
+    return { ok: true, user: Object.assign({}, _userDoc, { uid }) };
+  } catch (e) {
+    if (e.code === 'auth/email-already-in-use')
+      return { ok: false, error: 'Пользователь с таким именем уже существует' };
+    if (e.code === 'auth/weak-password')
+      return { ok: false, error: 'Пароль слишком простой (минимум 6 символов)' };
+    return { ok: false, error: e.message };
   }
-
-  const user = {
-    username: uname,
-    displayName,
-    passwordHash: hash,
-    createdAt: Date.now()
-  };
-  // Store admin flag if server granted it
-  try {
-    const resp2 = await fetch('/api/users/status/' + encodeURIComponent(uname));
-    const status = await resp2.json();
-    if (status.admin) user.admin = true;
-  } catch { /* offline */ }
-  data.users.push(user);
-  data.current = uname;
-  saveAuthData(data);
-  return { ok: true, user };
 }
+
+// ─── Login ────────────────────────────────────────────────────────────────
 
 /**
  * Log in an existing user.
- * @returns {{ ok: boolean, error?: string, user?: object }}
+ * @param {string} displayName
+ * @param {string} password
+ * @returns {Promise<{ok:boolean, error?:string, user?:object}>}
  */
-function loginUser(displayName, password) {
+async function loginUser(displayName, password) {
   displayName = (displayName || '').trim();
   if (!displayName || !password) return { ok: false, error: 'Введите имя и пароль' };
 
-  const data = getAuthData();
-  const uname = displayName.toLowerCase();
-  const user = data.users.find(u => u.username === uname);
-
-  if (!user) return { ok: false, error: 'Пользователь не найден' };
-  if (user.passwordHash !== simpleHash(password)) return { ok: false, error: 'Неверный пароль' };
-
-  data.current = uname;
-  saveAuthData(data);
-  return { ok: true, user };
-}
-
-/** Clear the current session (does not delete account data) */
-function logoutUser() {
-  const data = getAuthData();
-  data.current = null;
-  saveAuthData(data);
-}
-
-/** Returns a copy of the current user's full data object, or null */
-function getCurrentUserData() {
-  const data = getAuthData();
-  if (!data.current) return null;
-  const user = data.users.find(u => u.username === data.current);
-  return user ? { ...user } : null;
-}
-
-/** Update meta fields (bio, avatarEmoji, avatarUrl) — no password required */
-function updateUserMeta(meta) {
-  const data = getAuthData();
-  const user = data.users.find(u => u.username === data.current);
-  if (!user) return { ok: false, error: 'Пользователь не найден' };
-  if (meta.bio !== undefined) user.bio = String(meta.bio).slice(0, 100);
-  if (meta.avatarEmoji !== undefined) user.avatarEmoji = meta.avatarEmoji || null;
-  if (meta.avatarUrl !== undefined) user.avatarUrl = (meta.avatarUrl || '').trim().slice(0, 300) || null;
-  if (meta.avatarGradient !== undefined) user.avatarGradient = meta.avatarGradient || null;
-  saveAuthData(data);
-  return { ok: true };
-}
-
-// ─── VIP ──────────────────────────────────────────────────────────────
-// Codes: VIP99-XXXXX = 30 days, VIP249-XXXXX = 90 days, VIP499-XXXXX = lifetime (forever)
-// days value -1 = lifetime (sets vipForever flag)
-const _VIP_CODES = {
-  'VIP99-DEMO1': 30, 'VIP99-DEMO2': 30, 'VIP99-START': 30, 'VIP99-TEST1': 30,
-  'VIP249-DEMO1': 90, 'VIP249-DEMO2': 90, 'VIP249-START': 90, 'VIP249-TEST1': 90,
-  'VIP499-DEMO1': -1, 'VIP499-DEMO2': -1, 'VIP499-START': -1, 'VIP499-TEST1': -1,
-};
-
-function activateVip(code) {
-  const clean = (code || '').trim().toUpperCase();
-  const days = _VIP_CODES[clean];
-  if (days === undefined) return { ok: false, error: 'Неверный код активации' };
-  const data = getAuthData();
-  const user = data.users.find(u => u.username === data.current);
-  if (!user) return { ok: false, error: 'Пользователь не найден' };
-  if (days === -1) {
-    // Lifetime: set a far-future expiry + permanent flag
-    user.vipForever = true;
-    user.vipExpiry = 9999999999999; // year ~2286
-  } else {
-    const now = Date.now();
-    const base = user.vipForever ? now : Math.max(now, user.vipExpiry || 0);
-    user.vipExpiry = base + days * 24 * 60 * 60 * 1000;
+  const email = _nameToEmail(displayName);
+  try {
+    const cred = await _fbAuth.signInWithEmailAndPassword(email, password);
+    const uid  = cred.user.uid;
+    _fbUser = cred.user;
+    try {
+      const snap = await _fbDb.collection('users').doc(uid).get();
+      _userDoc = snap.exists ? snap.data() : null;
+    } catch { _userDoc = null; }
+    setUserStorage(uid);
+    return { ok: true, user: Object.assign({}, _userDoc || {}, { uid }) };
+  } catch (e) {
+    const wrongCreds = [
+      'auth/user-not-found', 'auth/wrong-password',
+      'auth/invalid-credential', 'auth/invalid-login-credentials',
+    ];
+    if (wrongCreds.includes(e.code)) return { ok: false, error: 'Неверное имя или пароль' };
+    return { ok: false, error: e.message };
   }
-  saveAuthData(data);
-  return { ok: true, days, forever: days === -1, expiresAt: user.vipExpiry };
 }
 
-/** Check if the current user is an admin */
-function isAdmin() {
-  const data = getAuthData();
-  if (!data.current) return false;
-  const user = data.users.find(u => u.username === data.current);
-  return !!user?.admin;
+// ─── Logout ───────────────────────────────────────────────────────────────
+
+/** Sign out the current user */
+async function logoutUser() {
+  await _fbAuth.signOut();
+  _fbUser  = null;
+  _userDoc = null;
 }
 
-/** Check if a user has active VIP. Pass username or leave empty for current user. */
-function isVip() {
-  return true;
-}
+// ─── User meta ────────────────────────────────────────────────────────────
 
-/** Returns { daysLeft, expiresAt, forever } */
-function getVipInfo() {
-  return { forever: true, expiresAt: null, daysLeft: null };
-}
-
-// ─── Double-Down Tokens ───────────────────────────────────────────────
-// VIP users get 3 tokens per calendar month.
-// One token can be spent before any rated game to double the rating delta
-// (both gains AND losses are ×2, just like Dota 2 Double Down).
-const DOUBLE_TOKENS_PER_MONTH = 10;
-
-/** Returns remaining double-down tokens for the current VIP user.
- *  Auto-refreshes to 3 when the calendar month changes. Returns 0 if not VIP. */
-function getDoubleTokens() {
-  const data = getAuthData();
-  const user = data.users.find(u => u.username === data.current);
-  if (!user) return 0;
-
-  const now = new Date();
-  const currentMonth = `${now.getFullYear()}-${now.getMonth()}`;
-  if (user.doubleTokenMonth !== currentMonth) {
-    user.doubleTokenMonth = currentMonth;
-    user.doubleTokens = DOUBLE_TOKENS_PER_MONTH;
-    saveAuthData(data);
+/** Update profile metadata (bio, avatarEmoji, avatarUrl, avatarGradient) */
+async function updateUserMeta(meta) {
+  if (!_fbUser) return { ok: false, error: 'Не вошёл в систему' };
+  const patch = {};
+  if (meta.bio             !== undefined) patch.bio             = String(meta.bio).slice(0, 100);
+  if (meta.avatarEmoji     !== undefined) patch.avatarEmoji     = meta.avatarEmoji     || null;
+  if (meta.avatarUrl       !== undefined) patch.avatarUrl       = (meta.avatarUrl || '').trim().slice(0, 300) || null;
+  if (meta.avatarGradient  !== undefined) patch.avatarGradient  = meta.avatarGradient  || null;
+  try {
+    await _fbDb.collection('users').doc(_fbUser.uid).update(patch);
+    _userDoc = Object.assign({}, _userDoc, patch);
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: e.message };
   }
-  return user.doubleTokens ?? DOUBLE_TOKENS_PER_MONTH;
 }
 
-/** Consume one double-down token.
- *  Returns { ok: true, remaining } or { ok: false, error } */
-function consumeDoubleToken() {
-  const data = getAuthData();
-  const user = data.users.find(u => u.username === data.current);
-  if (!user) return { ok: false, error: 'Пользователь не найден' };
-  if (!isVip()) return { ok: false, error: 'Требуется VIP' };
-
-  const now = new Date();
-  const currentMonth = `${now.getFullYear()}-${now.getMonth()}`;
-  if (user.doubleTokenMonth !== currentMonth) {
-    user.doubleTokenMonth = currentMonth;
-    user.doubleTokens = DOUBLE_TOKENS_PER_MONTH;
-  }
-  const current = user.doubleTokens ?? DOUBLE_TOKENS_PER_MONTH;
-  if (current <= 0) return { ok: false, error: 'Токены исчерпаны' };
-
-  user.doubleTokens = current - 1;
-  saveAuthData(data);
-  return { ok: true, remaining: user.doubleTokens };
-}
-
-/** Update display name — requires password confirmation */
-function updateDisplayName(newDisplayName, password) {
+/** Change display name — requires current password for re-authentication */
+async function updateDisplayName(newDisplayName, password) {
   newDisplayName = (newDisplayName || '').trim();
-  if (newDisplayName.length < 2) return { ok: false, error: 'Имя: минимум 2 символа' };
+  if (newDisplayName.length < 2)  return { ok: false, error: 'Имя: минимум 2 символа' };
   if (newDisplayName.length > 24) return { ok: false, error: 'Имя: максимум 24 символа' };
+  if (!_fbUser) return { ok: false, error: 'Не вошёл в систему' };
 
-  const data = getAuthData();
-  const user = data.users.find(u => u.username === data.current);
-  if (!user) return { ok: false, error: 'Пользователь не найден' };
-  if (user.passwordHash !== simpleHash(password)) return { ok: false, error: 'Неверный пароль' };
-
-  user.displayName = newDisplayName;
-  saveAuthData(data);
-  return { ok: true, displayName: newDisplayName };
+  const credential = firebase.auth.EmailAuthProvider.credential(_fbUser.email, password);
+  try {
+    await _fbUser.reauthenticateWithCredential(credential);
+  } catch {
+    return { ok: false, error: 'Неверный пароль' };
+  }
+  try {
+    await _fbDb.collection('users').doc(_fbUser.uid).update({ displayName: newDisplayName });
+    _userDoc = Object.assign({}, _userDoc, { displayName: newDisplayName });
+    return { ok: true, displayName: newDisplayName };
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
 }
 
-/** Change password — requires current password */
-function updatePassword(currentPassword, newPassword) {
-  if (!newPassword || newPassword.length < 4) return { ok: false, error: 'Новый пароль: минимум 4 символа' };
+/** Change password — requires current password for re-authentication */
+async function updatePassword(currentPassword, newPassword) {
+  if (!newPassword || newPassword.length < 6)
+    return { ok: false, error: 'Новый пароль: минимум 6 символов' };
+  if (!_fbUser) return { ok: false, error: 'Не вошёл в систему' };
 
-  const data = getAuthData();
-  const user = data.users.find(u => u.username === data.current);
-  if (!user) return { ok: false, error: 'Пользователь не найден' };
-  if (user.passwordHash !== simpleHash(currentPassword)) return { ok: false, error: 'Неверный текущий пароль' };
-
-  user.passwordHash = simpleHash(newPassword);
-  saveAuthData(data);
-  return { ok: true };
+  const credential = firebase.auth.EmailAuthProvider.credential(_fbUser.email, currentPassword);
+  try {
+    await _fbUser.reauthenticateWithCredential(credential);
+  } catch {
+    return { ok: false, error: 'Неверный текущий пароль' };
+  }
+  try {
+    await _fbUser.updatePassword(newPassword);
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
 }
 
-// ─── Admin helpers ──────────────────────────────────────────────────────
+// ─── Admin ────────────────────────────────────────────────────────────────
 
-// Admin activation codes (client-side, offline-friendly)
-const _ADMIN_CODES = new Set([
-  'ADMIN-MASTER99',
-  'ADMIN-SUDO2025',
-  'ADMIN-ROOT-TM1',
-]);
+const _ADMIN_CODES = new Set(['ADMIN-MASTER99', 'ADMIN-SUDO2025', 'ADMIN-ROOT-TM1']);
 
-/**
- * Activate admin mode with a secret code — works offline (no server needed).
- * Sets admin:true on the current user in localStorage.
- */
-function activateAdmin(code) {
+/** Activate admin mode with a secret code */
+async function activateAdmin(code) {
   const clean = (code || '').trim().toUpperCase();
   if (!_ADMIN_CODES.has(clean)) return { ok: false, error: 'Неверный код администратора' };
-  const data = getAuthData();
-  const user = data.users.find(u => u.username === data.current);
-  if (!user) return { ok: false, error: 'Не вошёл в систему' };
-  user.admin = true;
-  saveAuthData(data);
-  return { ok: true };
+  if (!_fbUser) return { ok: false, error: 'Не вошёл в систему' };
+  try {
+    await _fbDb.collection('users').doc(_fbUser.uid).update({ admin: true });
+    _userDoc = Object.assign({}, _userDoc, { admin: true });
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
 }
 
 /**
- * Refresh current user’s banned/admin status from server and update localStorage.
- * Returns { banned, admin } or null if offline.
+ * Refresh current user's status from Firestore.
+ * @returns {Promise<{banned:boolean, admin:boolean}|null>}
  */
 async function refreshUserStatus() {
-  const data = getAuthData();
-  if (!data.current) return null;
+  if (!_fbUser) return null;
   try {
-    const resp = await fetch('/api/users/status/' + encodeURIComponent(data.current));
-    const result = await resp.json();
-    if (!result.exists) return null;
-    const user = data.users.find(u => u.username === data.current);
-    if (!user) return null;
-    if (result.admin !== undefined) user.admin = !!result.admin;
-    saveAuthData(data);
-    return { banned: !!result.banned, admin: !!result.admin };
+    const snap = await _fbDb.collection('users').doc(_fbUser.uid).get();
+    if (!snap.exists) return null;
+    _userDoc = snap.data();
+    return { banned: !!_userDoc.banned, admin: !!_userDoc.admin };
   } catch { return null; }
 }
 
-/**
- * Fetch all users from server (admin only).
- * @returns {Promise<{ ok: boolean, users?: Array, error?: string }>}
- */
+/** Fetch all users (admin only) */
 async function getAdminUserList() {
-  const data = getAuthData();
-  const admin = data.users.find(u => u.username === data.current && u.admin);
-  if (!admin) return { ok: false, error: 'Нет прав' };
+  if (!isAdmin()) return { ok: false, error: 'Нет прав' };
   try {
-    const resp = await fetch(
-      `/api/admin/users?admin=${encodeURIComponent(admin.username)}&hash=${encodeURIComponent(admin.passwordHash)}`
-    );
-    return await resp.json();
-  } catch { return { ok: false, error: 'Сервер недоступен' }; }
+    const snap = await _fbDb.collection('users').get();
+    const users = snap.docs.map(d => {
+      const data = d.data();
+      const ts = data.createdAt;
+      return Object.assign({}, data, {
+        uid:       d.id,
+        createdAt: ts && ts.toDate ? ts.toDate().getTime() : (ts || null),
+      });
+    });
+    return { ok: true, users };
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
 }
 
 /**
- * Ban or unban a user (admin only).
- * @param {string} targetUsername
- * @param {boolean} ban  true = ban, false = unban
+ * Ban or unban a user by their Firebase UID (admin only).
+ * @param {string} targetUid
+ * @param {boolean} ban
  */
-async function banUser(targetUsername, ban) {
-  const data = getAuthData();
-  const admin = data.users.find(u => u.username === data.current && u.admin);
-  if (!admin) return { ok: false, error: 'Нет прав' };
+async function banUser(targetUid, ban) {
+  if (!isAdmin()) return { ok: false, error: 'Нет прав' };
   try {
-    const resp = await fetch('/api/admin/ban', {
-      method:  'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify({
-        adminUsername:    admin.username,
-        adminPasswordHash: admin.passwordHash,
-        targetUsername,
-        ban,
-      }),
-    });
-    return await resp.json();
-  } catch { return { ok: false, error: 'Сервер недоступен' }; }
+    await _fbDb.collection('users').doc(targetUid).update({ banned: ban });
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
 }
 
 
@@ -1634,7 +1633,7 @@ function renderStatsPage(container, lang = 'ru', isVip = true, profile = {}) {
           <h2 class="stats-title">📊 Статистика</h2>
           <div class="stats-subtitle">${cumSessions} ${plural(cumSessions,['сессия','сессии','сессий'])} · ${fmtNum(cumChars)} символов</div>
         </div>
-        <span class="stats-vip-tag">💎 VIP</span>
+
       </div>
 
       <!-- Primary cards -->
@@ -1800,7 +1799,7 @@ function renderStatsPage(container, lang = 'ru', isVip = true, profile = {}) {
     const dayLabels = dayKeys;
     const dayAvgs   = dayKeys.map(d => Math.round(byDay[d].reduce((a,v) => a+v, 0) / byDay[d].length));
     const r3 = setupCanvas('speed-by-day-chart', 700, 190);
-    if (r3) drawBarChart(r3, dayLabels, dayAvgs, '#f0c040', 'зн/мин');
+    if (r3) drawBarChart(r3, dayLabels, dayAvgs, '#58a6ff', 'зн/мин');
 
     renderModeBreakdown('mode-breakdown', sessions, modeIcons, modeNames);
     renderTop5('top5-tbody', sessions, modeIcons, modeNames);
@@ -2060,54 +2059,34 @@ function renderHeatmap(containerId, heatmap, lang) {
 
 // ===== js/leaderboard.js =====
 // ─── Leaderboard ──────────────────────────────────────────────────────
-// Reads all users from auth storage and builds a ranking table.
-// Data is read-only — no writes to other users' data.
+// Reads all users from Firestore and builds a ranking table.
 
-const LB_BASE_KEY = 'typemaster_';
-const LB_AUTH_KEY = 'typemaster_auth';
 const LEADERBOARD_UNLOCK_LEVEL = 1; // always unlocked
 
-/** Get a value from localStorage for a specific user without changing current user */
-function readUserKey(username, key, def = null) {
+/** Collect leaderboard entries from Firestore users collection */
+async function getLeaderboardEntries() {
+  if (typeof _fbDb === 'undefined') return [];
   try {
-    const raw = localStorage.getItem(LB_BASE_KEY + username + '_' + key);
-    return raw !== null ? JSON.parse(raw) : def;
-  } catch { return def; }
-}
-
-/** Collect leaderboard entries from all registered users */
-function getLeaderboardEntries() {
-  let authData;
-  try {
-    authData = JSON.parse(localStorage.getItem(LB_AUTH_KEY) || '{"users":[]}');
+    const snap = await _fbDb.collection('users').get();
+    return snap.docs
+      .filter(d => !d.data().banned)
+      .map(d => {
+        const data = d.data();
+        return {
+          username:      d.id,
+          displayName:   data.displayName   || 'Игрок',
+          level:         data.level         || 1,
+          bestSpeed:     data.bestSpeed     || 0,
+          totalSessions: data.totalSessions || 0,
+          totalChars:    data.totalChars    || 0,
+          avgAccuracy:   data.avgAccuracy   || 0,
+          streak:        data.streak        || 0,
+          ratingPoints:  data.ratingPoints  || 1000,
+          avatarEmoji:   data.avatarEmoji   || null,
+          avatarUrl:     data.avatarUrl     || null,
+        };
+      });
   } catch { return []; }
-
-  return authData.users.map(user => {
-    const profile = readUserKey(user.username, 'profile', {});
-    const stats   = readUserKey(user.username, 'stats',   { sessions: [], dailyStreak: 0 });
-    const sessions = stats.sessions || [];
-    const bestSpeed = sessions.length ? Math.max(...sessions.map(s => s.speed || 0)) : 0;
-    const avgAcc = sessions.length
-      ? Math.round(sessions.reduce((s, x) => s + (x.accuracy || 0), 0) / sessions.length)
-      : 0;
-
-    const vip = !!(user.vipForever || (user.vipExpiry && user.vipExpiry > Date.now()));
-    return {
-      username:     user.username,
-      displayName:  user.displayName || user.username,
-      level:        profile.level        || 1,
-      bestSpeed:    bestSpeed,
-      totalSessions: sessions.length,
-      totalChars:   profile.totalChars   || 0,
-      avgAccuracy:  avgAcc,
-      streak:       stats.dailyStreak    || 0,
-      createdAt:    user.createdAt       || 0,
-      ratingPoints: profile.ratingPoints || 1000,
-      vip,
-      avatarEmoji:  user.avatarEmoji || null,
-      avatarUrl:    user.avatarUrl   || null,
-    };
-  });
 }
 
 /** Check if leaderboard is unlocked for the given profile level */
@@ -2123,8 +2102,9 @@ const LEADERBOARD_UNLOCK_LEVEL_VALUE = LEADERBOARD_UNLOCK_LEVEL;
  * @param {string} currentUsername  — highlight current user row
  * @param {number} profileLevel     — to show locked/unlocked state
  */
-function renderLeaderboard(container, currentUsername, profileLevel) {
-  const entries = getLeaderboardEntries();
+async function renderLeaderboard(container, currentUsername, profileLevel) {
+  container.innerHTML = '<p class="text-muted" style="padding:40px;text-align:center">Загрузка…</p>';
+  const entries = await getLeaderboardEntries();
   if (!entries.length) {
     container.innerHTML = '<p class="text-muted" style="padding:40px;text-align:center">Нет данных</p>';
     return;
@@ -3770,13 +3750,18 @@ function boot() {
   initAuth(); // show login/register modal if not authenticated
 }
 
-function initAuth() {
+async function initAuth() {
+  await waitForAuth();
   const authModal = document.getElementById('auth-modal');
   if (!authModal) return;
 
   if (isLoggedIn()) {
     // Already have a session — continue straight to app
-    startApp(getCurrentUser(), getCurrentUserDisplayName());
+    try {
+      await startApp(getCurrentUser(), getCurrentUserDisplayName());
+    } catch (err) {
+      document.body.innerHTML = `<div style="color:#e74c3c;padding:32px;font-family:monospace;white-space:pre-wrap;font-size:14px"><b>Ошибка запуска:</b>\n${err && err.stack ? err.stack : String(err)}</div>`;
+    }
     return;
   }
 
@@ -3795,16 +3780,19 @@ function initAuth() {
   });
 
   // Login form
-  authModal.querySelector('#auth-form-login').addEventListener('submit', e => {
+  authModal.querySelector('#auth-form-login').addEventListener('submit', async e => {
     e.preventDefault();
     const name = document.getElementById('login-name').value;
     const pass = document.getElementById('login-pass').value;
     const errEl = document.getElementById('login-error');
-    const res = loginUser(name, pass);
+    const submitBtn = authModal.querySelector('#auth-form-login button[type="submit"]');
+    if (submitBtn) { submitBtn.disabled = true; submitBtn.textContent = 'Вход…'; }
+    const res = await loginUser(name, pass);
+    if (submitBtn) { submitBtn.disabled = false; submitBtn.textContent = 'Войти'; }
     if (!res.ok) { errEl.textContent = res.error; return; }
     errEl.textContent = '';
     authModal.classList.remove('visible');
-    startApp(getCurrentUser(), res.user.displayName);
+    await startApp(getCurrentUser(), res.user.displayName);
   });
 
   // Register form
@@ -3824,13 +3812,17 @@ function initAuth() {
     if (!res.ok) { errEl.textContent = res.error; return; }
     errEl.textContent = '';
     authModal.classList.remove('visible');
-    startApp(getCurrentUser(), res.user.displayName);
+    await startApp(getCurrentUser(), res.user.displayName);
   });
 }
 
-function startApp(username, displayName) {
+async function startApp(username, displayName) {
+  try {
   // Namespace all localStorage keys under this user
   setUserStorage(username);
+
+  // Load persisted data from Firestore (cross-device sync)
+  await loadDataFromFirestore(username);
 
   // Reload profile/settings after namespacing
   profile = loadProfile();
@@ -3844,9 +3836,9 @@ function startApp(username, displayName) {
   // Bind logout button
   const logoutBtn = document.getElementById('btn-logout');
   if (logoutBtn) {
-    logoutBtn.addEventListener('click', () => {
+    logoutBtn.addEventListener('click', async () => {
       if (!confirm('Выйти из аккаунта?')) return;
-      logoutUser();
+      await logoutUser();
       // Reset storage namespace and reload the page to show auth again
       window.location.reload();
     });
@@ -3887,6 +3879,9 @@ function startApp(username, displayName) {
   });
 
   showPage('home');
+  } catch (err) {
+    document.body.innerHTML = `<div style="color:#e74c3c;padding:32px;font-family:monospace;white-space:pre-wrap;font-size:14px;background:#0d1117"><b>Ошибка запуска TypeMaster:</b>\n${err && err.stack ? err.stack : String(err)}</div>`;
+  }
 }
 
 
@@ -4043,7 +4038,10 @@ function bindNav() {
 }
 
 function showPage(page) {
-  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.page').forEach(p => {
+    p.classList.remove('active');
+    p.style.display = '';
+  });
   const target = document.getElementById('page-' + page);
   if (target) target.classList.add('active');
 
@@ -4528,10 +4526,10 @@ function renderAchievementsPage() {
     </div>`;
 }
 // ─── Leaderboard Page ────────────────────────────────────────────────────
-function renderLeaderboardPage() {
+async function renderLeaderboardPage() {
   const container = document.getElementById('leaderboard-container');
   if (!container) return;
-  renderLeaderboard(container, getCurrentUser(), profile.level || 1);
+  await renderLeaderboard(container, getCurrentUser(), profile.level || 1);
 }
 
 function updateLeaderboardNavState() {
@@ -4567,38 +4565,31 @@ function renderHomePage() {
       const currentTheme = settings.theme || 'dark';
 
       vipBlock.innerHTML = `
-        <div class="home-vip-card">
-          <div class="hvip-shimmer"></div>
-          <div class="hvip-glow"></div>
-          <div class="hvip-header">
-            <div class="hvip-title-col">
-              <div class="hvip-title">TypeMaster</div>
-            </div>
-            <button class="hvip-edit-btn" id="hvip-edit-btn" title="Редактировать профиль">⚙️</button>
+        <div class="home-theme-card">
+          <div class="htc-header">
+            <span class="htc-label">🌈 Тема</span>
+            <button class="htc-edit-btn" id="hvip-edit-btn" title="Редактировать профиль">⚙️</button>
           </div>
-          <div class="hvip-divider"></div>
-            <span class="hvip-theme-label">Тема:</span>
-            <div class="hvip-theme-btns" id="hvip-theme-btns">
-              ${[
-                { id:'dark', e:'🌑', n:'Тёмная' },
-                { id:'neon', e:'🔵', n:'Неон' },
-                { id:'rose', e:'🌸', n:'Rose' },
-                { id:'galaxy', e:'🌌', n:'Галактика' },
-                { id:'emerald', e:'🌿', n:'Изумруд' }
-              ].map(t => `<button class="hvip-theme-dot${t.id === currentTheme ? ' active' : ''}" data-theme="${t.id}" title="${t.n}">${t.e}</button>`).join('')}
-            </div>
+          <div class="htc-btns" id="hvip-theme-btns">
+            ${[
+              { id:'dark', e:'🌑', n:'Тёмная' },
+              { id:'neon', e:'🔵', n:'Неон' },
+              { id:'rose', e:'🌸', n:'Rose' },
+              { id:'galaxy', e:'🌌', n:'Галактика' },
+              { id:'emerald', e:'🌿', n:'Изумруд' }
+            ].map(t => `<button class="htc-dot${t.id === currentTheme ? ' active' : ''}" data-theme="${t.id}" title="${t.n}">${t.e}<span>${t.n}</span></button>`).join('')}
           </div>
         </div>`;
 
       vipBlock.querySelector('#hvip-edit-btn')?.addEventListener('click', () => openProfileModal());
-      vipBlock.querySelectorAll('.hvip-theme-dot').forEach(btn => {
+      vipBlock.querySelectorAll('.htc-dot').forEach(btn => {
         btn.addEventListener('click', () => {
           const old = settings.theme || 'dark';
           document.body.classList.remove('theme-' + old);
           settings.theme = btn.dataset.theme;
           saveSettings(settings);
           document.body.classList.add('theme-' + settings.theme);
-          vipBlock.querySelectorAll('.hvip-theme-dot').forEach(b => b.classList.toggle('active', b.dataset.theme === settings.theme));
+          vipBlock.querySelectorAll('.htc-dot').forEach(b => b.classList.toggle('active', b.dataset.theme === settings.theme));
           document.querySelectorAll('.vip-theme-btn').forEach(b => b.classList.toggle('active', b.dataset.theme === settings.theme));
         });
       });
@@ -4752,12 +4743,12 @@ function openProfileModal() {
   // Save display name
   const saveNameBtn = document.getElementById('profile-save-name');
   if (saveNameBtn) {
-    saveNameBtn.onclick = () => {
+    saveNameBtn.onclick = async () => {
       const errEl = document.getElementById('profile-name-error');
       const newName = document.getElementById('profile-edit-newname')?.value || '';
       const pass = document.getElementById('profile-edit-name-pass')?.value || '';
       if (errEl) { errEl.textContent = ''; errEl.className = 'auth-error'; }
-      const res = updateDisplayName(newName, pass);
+      const res = await updateDisplayName(newName, pass);
       if (!res.ok) { if (errEl) errEl.textContent = res.error; return; }
       // Update profile name
       profile.name = res.displayName;
@@ -4775,14 +4766,14 @@ function openProfileModal() {
   // Save password
   const savePassBtn = document.getElementById('profile-save-pass');
   if (savePassBtn) {
-    savePassBtn.onclick = () => {
+    savePassBtn.onclick = async () => {
       const errEl = document.getElementById('profile-pass-error');
       const cur = document.getElementById('profile-edit-curpass')?.value || '';
       const nw = document.getElementById('profile-edit-newpass')?.value || '';
       const nw2 = document.getElementById('profile-edit-newpass2')?.value || '';
       if (errEl) { errEl.textContent = ''; errEl.className = 'auth-error'; }
       if (nw !== nw2) { if (errEl) errEl.textContent = 'Пароли не совпадают'; return; }
-      const res = updatePassword(cur, nw);
+      const res = await updatePassword(cur, nw);
       if (!res.ok) { if (errEl) errEl.textContent = res.error; return; }
       if (errEl) { errEl.className = 'profile-edit-success'; errEl.textContent = '✓ Пароль изменён'; setTimeout(() => { errEl.textContent = ''; errEl.className = 'auth-error'; }, 2500); }
       ['profile-edit-curpass','profile-edit-newpass','profile-edit-newpass2'].forEach(id => {
@@ -5059,7 +5050,7 @@ async function renderAdminPage() {
           <div class="aur-actions">
             ${!u.admin ? `
               <button class="btn btn-sm ${u.banned ? 'btn-accent' : 'btn-danger'} aur-ban-btn"
-                data-target="${u.username}" data-ban="${u.banned ? '0' : '1'}">
+                data-target="${u.uid}" data-name="${u.displayName}" data-ban="${u.banned ? '0' : '1'}">
                 ${u.banned ? '✅ Разбанить' : '🚫 Забанить'}
               </button>` : ''}
           </div>
@@ -5082,12 +5073,13 @@ async function renderAdminPage() {
   container.querySelectorAll('.aur-ban-btn').forEach(btn => {
     btn.addEventListener('click', async () => {
       const target = btn.dataset.target;
+      const name = btn.dataset.name || target;
       const ban = btn.dataset.ban === '1';
       btn.disabled = true;
       btn.textContent = '…';
       const res = await banUser(target, ban);
       if (res.ok) {
-        showToast(ban ? `${target} забанен.` : `${target} разбанен.`);
+        showToast(ban ? `${name} забанен.` : `${name} разбанен.`);
         renderAdminPage(); // refresh
       } else {
         showToast(res.error || 'Ошибка', 'error');

@@ -8,7 +8,7 @@
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⌨️</text></svg>" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&display=swap" />
-  <link rel="stylesheet" href="css/style.css" />
+  <link rel="stylesheet" href="css/style.css?v=4" />
 </head>
 <body>
 <div id="app">
@@ -328,7 +328,7 @@
       </div>
       <div class="auth-field">
         <label>Пароль</label>
-        <input type="password" id="reg-pass" autocomplete="new-password" placeholder="Минимум 4 символа" />
+        <input type="password" id="reg-pass" autocomplete="new-password" placeholder="Минимум 6 символов" />
       </div>
       <div class="auth-field">
         <label>Подтверждение пароля</label>
@@ -388,7 +388,11 @@
   </div>
 </div>
 
-<script src="bundle.js"></script>
+<!-- Firebase compat SDK (must load before bundle.js) -->
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+<script src="bundle.js?v=4"></script>
 
 <!-- ═══ CUSTOM TEXT MODAL ═══════════════════════════════════════════ -->
 <div class="modal-overlay" id="custom-text-modal">
